@@ -1,0 +1,57 @@
+
+services:
+
+  postgres:
+    image: postgres:16.6-alpine
+    container_name: artifactory-postgres
+    environment:
+      POSTGRES_DB: artifactory
+      POSTGRES_USER: artifactory
+      POSTGRES_PASSWORD: artifactory
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - artifactory-net
+
+  artifactory:
+    image: docker.bintray.io/jfrog/artifactory-oss:latest
+    container_name: artifactory
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    ports:
+      - "8081:8081"  # Web UI
+      - "8082:8082"  # API / router
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - artifactory_data:/var/opt/jfrog/artifactory
+    environment:
+      - JF_SHARED_DATABASE_TYPE=postgresql
+      - JF_SHARED_DATABASE_DRIVER=org.postgresql.Driver
+      - JF_SHARED_DATABASE_URL=jdbc:postgresql://postgres:5432/artifactory
+      - JF_SHARED_DATABASE_USERNAME=artifactory
+      - JF_SHARED_DATABASE_PASSWORD=artifactory
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 32000
+        hard: 40000
+    networks:
+      - artifactory-net
+
+volumes:
+  artifactory_data:
+  postgres_data:
+  mitmproxy_data:
+
+networks:
+  artifactory-net:
+    driver: bridge
