@@ -1,42 +1,91 @@
+# Cache-Forge
 
-# Cache Forge
+Cache-Forge is a centralized caching layer for software artifacts, package dependencies, and container images. It sits between your internal clients and public registries (PyPI, npm, Docker Hub, etc.), so that every dependency is fetched from the Internet only once and then served locally on subsequent requests.
 
-Cache-Forge is designed to act as a centralized caching layer for software artifacts, package dependencies, and container images. Its primary goal is to optimize bandwidth usage, reduce external dependency on public registries, and accelerate development workflows across devices in a self-hosted lab environment. By sitting between internal clients and upstream repositories, Cache-Forge ensures that once a dependency is fetched, it is stored locally and served rapidly on subsequent requests.
+**Why use it?**
 
-The project is built around [JFrog Artifactory](https://jfrog.com/artifactory/) that supports a wide variety of artifact types including Python packages (PyPI), JavaScript modules (npm), Docker images, Maven libraries, and more. This universal caching mechanism allows developers and automated CI/CD pipelines in the home lab to reliably access consistent versions of packages, even when disconnected from the Internet or when upstream sources are rate-limited or unavailable. Cache-Forge is particularly valuable in environments with frequent rebuilds or experimentation, ensuring deterministic builds while minimizing redundant downloads. You can find more information on artifactory in [here](./ARTIFACTORY.md).
+- **Saves bandwidth** — repeated downloads are served from the local cache.
+- **Speeds up builds** — cached artifacts are available instantly.
+- **Improves reliability** — builds succeed even when upstream registries are rate-limited, slow, or offline.
+- **Ensures consistency** — every machine in the lab resolves the same artifact versions.
 
 ## System Architecture
 
-<img src="pics/cache_forge.jpeg" alt="segment" width="450">
+<img src="pics/cache_forge.jpeg" alt="Cache-Forge architecture diagram" width="450">
 
-We deploy JFrog Artifactory OSS as a containerized service within the home lab or development environment. Running Artifactory inside a container provides a clean, isolated, and easily reproducible runtime that integrates well with the rest of our infrastructure. Note that OSS only supports core formats (Maven, Gradle, Ivy, SBT). "Pro" is the minimum required license to use PyPI and other modern package types (npm, Go, Docker remote).
+Cache-Forge is built on [JFrog Artifactory OSS](https://jfrog.com/artifactory/), deployed as a containerized service. The stack has two main components:
 
-To ensure data durability and production-grade resilience, we configure Artifactory to use an external PostgreSQL database instead of its default embedded Derby database. While Derby is lightweight and convenient for quick demos or evaluation, it is file-based, lacks crash resilience, and is not suitable for persistent or production use especially within containers, where file system volatility is a concern. PostgreSQL, on the other hand, provides a reliable and fully transactional relational database engine that can safely handle Artifactory’s metadata storage, including artifact relationships, checksums, repository configurations, access permissions, and build information.
+| Component           | Role           |
+|---------------------|----------------|
+| **Artifactory OSS** | Caches and serves artifacts. Clients point to Artifactory instead of public registries. |
+| **PostgreSQL**      | Stores Artifactory metadata (artifact relationships, checksums, repository configs, permissions, and build info). |
 
-In this architecture, binary artifacts are stored on persistent disk volumes, while metadata is stored in PostgreSQL, ensuring that both the contents and context of every artifact remain intact across restarts, crashes, and upgrades. This setup gives us the flexibility and reliability needed for long-term artifact management, and allows us to treat our artifact infrastructure with the same seriousness as our source code and production workloads.
+> **Note:** Artifactory OSS supports Maven, Gradle, Ivy, and SBT repositories.
+> PyPI, npm, Go, Docker, and other modern formats require a **Pro** license.
+> See [Artifactory Overview](./ARTIFACTORY.md) for more details on Artifactory configuration.
 
-Artifactory acts as a proxy for public package sources like PyPI, Docker Hub, or Go proxy servers. Client tools are repointed to Artifactory, so they no longer fetch packages from the Internet directly. Artifactory caches those packages locally on first access, and serves them from cache on subsequent requests.
+### How It Works
 
-The [Artifactory_API](./artifactory_api.py) class is a custom Python wrapper for interacting with the JFrog Artifactory instance via its REST API. It provides a comprehensive interface to perform key operations such as listing repositories, uploading and downloading files, retrieving artifact metadata, checking for file existence, managing directories, and inspecting download statistics. Designed to support automation and scripting use cases, this class can integrate with local tools or CI workflows, allowing developers to manage artifacts programmatically within their home lab or production environments.
+1. A client tool (pip, npm, docker, etc.) requests a package from Artifactory.
+2. On the **first request**, Artifactory fetches the package from the upstream registry and stores a local copy.
+3. On **subsequent requests**, Artifactory serves the package directly from cache — no Internet access needed.
+
+Binary artifacts are stored on persistent Docker volumes, while metadata lives in PostgreSQL. This separation ensures that both artifact contents and their metadata survive container restarts, crashes, and upgrades.
+
+### Why PostgreSQL Instead of the Default Database?
+
+Artifactory uses PostgreSQL internally to store its metadata — you never interact with PostgreSQL directly. Artifactory ships with an embedded Derby database that works for quick demos, but Derby is file-based and lacks crash resilience — a poor fit for containers where the file system can be volatile. PostgreSQL provides a fully transactional, production-grade database engine suitable for long-term use. The connection is configured automatically through environment variables in `docker-compose.yml`.
 
 ## Getting Started
 
-Start all containers in the background:
+### 1. Start the Services
 
-    docker compose up -d
+```bash
+docker compose up -d
+```
 
-Wait for the artifactory container to come up. Access the web UI from the following and go over the initial configuration:
+This launches both the Artifactory and PostgreSQL containers in the background.
 
-    http://localhost:8082
+### 2. Access the Web UI
 
-Verify that artifactory REST is working:
+Wait for the Artifactory container to finish starting, then open the web UI to complete the initial setup wizard:
 
-    curl -u <username>:<password> http://localhost:8081/artifactory/api/system/version
+```
+http://localhost:8082
+```
 
-You can setup access token and invoke like:
+### 3. Verify the REST API
 
-    curl -H "Authorization: Bearer <your_token>" http://localhost:8081/artifactory/api/system/version
+Confirm that Artifactory is running by querying the version endpoint:
 
-The [main.py](main.py) Python script automates the process of connecting to the JFrog Artifactory OSS instance, uploading sample files, and listing repository contents. This script is useful for automated artifact population and verification in a home lab or CI environment.
+```bash
+# Using basic authentication
+curl -u <username>:<password> http://localhost:8081/artifactory/api/system/version
 
-<img src="pics/example_upload.png" alt="segment" width="750">
+# Using an access token
+curl -H "Authorization: Bearer <your_token>" http://localhost:8081/artifactory/api/system/version
+```
+
+## Python Utilities
+
+### Artifactory API Wrapper
+
+The [`Artifactory_API`](./artifactory_api.py) class is a Python wrapper around the JFrog Artifactory REST API. It supports operations such as:
+
+- Listing repositories and directory contents
+- Uploading and downloading files
+- Retrieving artifact metadata and download statistics
+- Checking file existence and managing directories
+
+This class is designed for automation and scripting, making it easy to integrate Artifactory into CI/CD pipelines or local tooling.
+
+### Example Script
+
+The [`main.py`](./main.py) script demonstrates how to connect to Artifactory, upload sample files, and list repository contents — useful for verifying your setup or populating a repository automatically.
+
+```bash
+export ARTIFACTORY_TOKEN=<your_token>
+python main.py
+```
+
+<img src="pics/example_upload.png" alt="Example upload output" width="800">
